@@ -517,14 +517,37 @@ class LevelDBWriter(writableDB: DB, fs: FunctionalitySettings) extends Caches wi
     db.get(k.filledVolumeAndFeeHistory(orderId)).headOption.fold(VolumeAndFee.empty)(h => db.get(k.filledVolumeAndFee(h, orderId)))
   }
 
-  override protected def loadApprovedFeatures: Map[Short, Int] = readOnly(_.get(k.approvedFeatures))
+  override protected def loadApprovedFeatures(): Map[Short, Int] = readOnly(_.get(k.approvedFeatures))
 
-  override protected def loadActivatedFeatures: Map[Short, Int] = fs.preActivatedFeatures ++ readOnly(_.get(k.activatedFeatures))
+  override protected def loadActivatedFeatures(): Map[Short, Int] = fs.preActivatedFeatures ++ readOnly(_.get(k.activatedFeatures))
 
   private def updateHistory(rw: RW, key: Key[Seq[Int]], threshold: Int, kf: Int => Key[_]): Seq[Array[Byte]] = {
     val (c1, c2) = rw.get(key).partition(_ > threshold)
     rw.put(key, (height +: c1) ++ c2.headOption)
     c2.drop(1).map(kf(_).keyBytes)
+  }
+
+  private def traceWavesBalances(portfolios: Map[BigInt, Long]): Unit = if (wavesBalanceTrace.logger.isTraceEnabled) {
+    val balanceLines = for {
+      (address, p) <- portfolios
+    } yield s"$address: $p"
+
+    wavesBalanceTrace.trace(s"Waves balances at $height:\n${balanceLines.mkString("\n")}")
+  }
+
+  private def traceAssetBalances(assets: Map[BigInt, Map[ByteStr, Long]]): Unit = if (assetBalanceTrace.logger.isTraceEnabled) {
+    val assetBalances = for {
+      (addressId, assets) <- assets
+      (assetId, v)        <- assets
+    } yield s"$addressId $assetId: $v"
+    assetBalanceTrace.trace(s"Asset balances at $height:\n${assetBalances.mkString("\n")}")
+  }
+
+  private def traceFilledQuantity(filledVolumeAndFee: Map[ByteStr, VolumeAndFee]): Unit = if (filledVolumeAndFeeTrace.logger.isTraceEnabled) {
+    val fq = for {
+      (orderId, fv) <- filledVolumeAndFee
+    } yield s"$orderId: ${fv.volume},${fv.fee}"
+    filledVolumeAndFeeTrace.trace(s"Order fills at $height:\n${fq.mkString("\n")}")
   }
 
   override protected def doAppend(block: Block,
@@ -547,6 +570,10 @@ class LevelDBWriter(writableDB: DB, fs: FunctionalitySettings) extends Caches wi
     rw.put(k.heightOf(block.uniqueId), Some(height))
     rw.put(k.lastAddressId, Some(loadMaxAddressId() + newAddresses.size))
     rw.put(k.score(height), rw.get(k.score(height - 1)) + block.blockScore())
+
+    traceWavesBalances(wavesBalances)
+    traceAssetBalances(assetBalances)
+    traceFilledQuantity(filledQuantity)
 
     for ((address, id) <- newAddresses) {
       rw.put(k.addressId(address), Some(id))
